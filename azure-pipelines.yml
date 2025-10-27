@@ -32,7 +32,13 @@ stages:
     displayName: 'Scan Terraform Code'
     pool:
       vmImage: 'ubuntu-latest'
+    timeoutInMinutes: 20
     steps:
+    - script: |
+        echo "Current working directory: $(pwd)"
+        echo "Listing directory contents:"
+        ls -la
+      displayName: 'Show Working Directory'
     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
       displayName: 'Install Terraform'
       inputs:
@@ -62,7 +68,13 @@ stages:
     displayName: 'Validate and Create Plan'
     pool:
       vmImage: 'ubuntu-latest'
+    timeoutInMinutes: 30
     steps:
+    - script: |
+        echo "Starting validation stage"
+        echo "Using Terraform version:"
+        terraform version
+      displayName: 'Show Terraform Version'
     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
       displayName: 'Install Terraform'
       inputs:
@@ -105,10 +117,16 @@ stages:
     environment: $(environment)
     pool:
       vmImage: 'ubuntu-latest'
+    timeoutInMinutes: 60
     strategy:
       runOnce:
         deploy:
           steps:
+          - script: |
+              echo "Starting deployment stage"
+              echo "Environment: $(environment)"
+              echo "Working directory: $(pwd)"
+            displayName: 'Show Deployment Context'
           - checkout: self
           
           - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
@@ -145,7 +163,12 @@ stages:
     displayName: 'Run Security Scans'
     pool:
       vmImage: 'ubuntu-latest'
+    timeoutInMinutes: 45
     steps:
+    - script: |
+        echo "Starting security validation stage"
+        echo "Resource Group: webapp-rg"
+      displayName: 'Show Security Scan Context'
     - task: AzurePowerShell@5
       inputs:
         azureSubscription: '$(serviceConnection)'
@@ -188,7 +211,12 @@ stages:
     displayName: 'Configure Azure Monitor and App Insights'
     pool:
       vmImage: 'ubuntu-latest'
+    timeoutInMinutes: 30
     steps:
+    - script: |
+        echo "Starting monitoring configuration"
+        echo "Subscription ID: $(subscription-id)"
+      displayName: 'Show Monitoring Context'
     - task: AzurePowerShell@5
       inputs:
         azureSubscription: '$(serviceConnection)'

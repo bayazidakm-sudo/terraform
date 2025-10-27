@@ -5,9 +5,10 @@ variables:
   - name: serviceConnection
     value: 'CandidateProject-2'
   - name: tfworkingDirectory
-    value: '$(Build.SourcesDirectory)/terraform'
+    value: '$(System.DefaultWorkingDirectory)'
   - name: environment
     value: 'prod'
+  # Azure authentication variables
   - name: ARM_CLIENT_ID
     value: '$(servicePrincipalId)'
   - name: ARM_CLIENT_SECRET
@@ -24,25 +25,91 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - checkout: self
-
+    # Verify workspace structure
     - script: |
         set -euo pipefail
+        echo "Workspace structure:"
+        pwd
+        ls -R $(System.DefaultWorkingDirectory)
+      displayName: 'Verify Workspace Structure'
+    
+    # Install Terraform using official method
+    - script: |
+        set -euo pipefail
+        echo "Installing HashiCorp GPG key..."
+        wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+        
+        echo "Adding HashiCorp repository..."
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+        
+        echo "Updating package list..."
         sudo apt-get update
-        sudo apt-get install -y gnupg software-properties-common curl unzip
-        curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-        sudo apt-get update && sudo apt-get install -y terraform
-        terraform version
+        
+        echo "Installing specific version of Terraform..."
+        sudo apt-get install -y terraform=1.13.4
+        
+        echo "Verifying Terraform installation..."
+        terraform version || {
+          echo "Terraform installation failed"
+          exit 1
+        }
+        
+        # Ensure terraform is in PATH and executable
+        which terraform
+        ls -l $(which terraform)
       displayName: 'Install Terraform'
-
+    
     - script: |
         set -euo pipefail
-        curl -fSL -o tfsec https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64
+        TFSEC_URL="https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64"
+        echo "Downloading tfsec from $TFSEC_URL"
+        # -f fails on HTTP errors, -S shows errors, -L follows redirects
+        curl -fSL -o tfsec "$TFSEC_URL"
+        if [ ! -s tfsec ]; then
+          echo "tfsec binary not downloaded or empty" >&2
+          exit 1
+        fi
         chmod +x tfsec
-        ./tfsec "$(tfworkingDirectory)" --format junit > test-results.xml || echo "tfsec failed"
+        echo "tfsec version: $(./tfsec --version || echo 'unknown')"
+        
+        # Create initial XML structure
+        cat > test-results.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="tfsec" tests="0" failures="0">
+  </testsuite>
+</testsuites>
+EOF
+        
+        # Run tfsec and capture both output and exit code
+        set +e
+        OUTPUT=$(./tfsec "$(tfworkingDirectory)" --format junit 2>&1)
+        TFSEC_EXIT_CODE=$?
+        set -e
+        
+        # Verify XML is valid before publishing
+        if xmllint --noout test-results.xml.tmp 2>/dev/null; then
+          mv test-results.xml.tmp test-results.xml
+          echo "Valid JUnit XML generated"
+        else
+          # Generate a valid XML with error message if tfsec output is invalid
+          cat > test-results.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="tfsec" tests="1" failures="1">
+    <testcase name="tfsec_scan" classname="SecurityScan">
+      <failure message="Failed to generate valid tfsec output">Check terraform directory manually</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+EOF
+          echo "Generated fallback XML due to invalid tfsec output"
+        fi
+        
+        echo "Final output files:"
+        ls -l tfsec test-results.xml
       displayName: 'Run tfsec Security Scanner'
-
+    
     - task: PublishTestResults@2
       inputs:
         testResultsFormat: 'JUnit'
@@ -56,21 +123,34 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - checkout: self
-
+    # Install Terraform using HashiCorp's official repository
     - script: |
         set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y gnupg software-properties-common curl unzip
-        curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "Installing HashiCorp GPG key..."
+        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        
+        echo "Adding HashiCorp repository..."
         echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+        
+        echo "Updating package list and installing Terraform..."
         sudo apt-get update && sudo apt-get install -y terraform
+        
+        echo "Verifying Terraform installation..."
         terraform version
       displayName: 'Install Terraform'
-
+    
     - script: |
         set -euo pipefail
-        cd "$(tfworkingDirectory)"
+        
+        # Check workspace directory
+        echo "Workspace directory contents:"
+        ls -la $(System.DefaultWorkingDirectory)
+        
+        # Verify working directory
+        echo "Current working directory: $PWD"
+        echo "Target working directory: $(tfworkingDirectory)"
+        
+        # Initialize Terraform with backend config
         terraform init \
           -backend-config="resource_group_name=webapp-rg1" \
           -backend-config="storage_account_name=mytfstatefiles1" \
@@ -82,14 +162,15 @@ stages:
           -backend-config="client_secret=$(ARM_CLIENT_SECRET)"
       displayName: 'Terraform Init'
       env:
+        # Using service principal authentication
         ARM_CLIENT_ID: $(ARM_CLIENT_ID)
         ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
         ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
         ARM_TENANT_ID: $(ARM_TENANT_ID)
-
+    
     - script: |
         set -euo pipefail
-        cd "$(tfworkingDirectory)"
+        cd $(tfworkingDirectory)
         terraform validate
       displayName: 'Terraform Validate'
       env:
@@ -97,25 +178,25 @@ stages:
         ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
         ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
         ARM_TENANT_ID: $(ARM_TENANT_ID)
-
+    
     - script: |
         set -euo pipefail
-        cd "$(tfworkingDirectory)"
-        terraform plan -out="$(Build.ArtifactStagingDirectory)/terraform.tfplan"
+        cd $(tfworkingDirectory)
+        terraform plan -out=$(Build.ArtifactStagingDirectory)/terraform.tfplan
       displayName: 'Terraform Plan'
       env:
         ARM_CLIENT_ID: $(ARM_CLIENT_ID)
         ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
         ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
         ARM_TENANT_ID: $(ARM_TENANT_ID)
-
+    
     - publish: $(Build.ArtifactStagingDirectory)/terraform.tfplan
       artifact: TerraformPlan
 
 - stage: Deploy
-  dependsOn:
-    - SecurityScan
-    - Validate
+  dependsOn: 
+  - SecurityScan
+  - Validate
   condition: succeeded()
   jobs:
   - deployment: ApplyTerraform
@@ -126,21 +207,27 @@ stages:
       runOnce:
         deploy:
           steps:
-          - checkout: self
-
+          # Install Terraform using HashiCorp's official repository
           - script: |
               set -euo pipefail
-              sudo apt-get update
-              sudo apt-get install -y gnupg software-properties-common curl unzip
-              curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+              echo "Installing HashiCorp GPG key..."
+              wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+              
+              echo "Adding HashiCorp repository..."
               echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+              
+              echo "Updating package list and installing Terraform..."
               sudo apt-get update && sudo apt-get install -y terraform
+              
+              echo "Verifying Terraform installation..."
               terraform version
             displayName: 'Install Terraform'
-
+          
           - script: |
               set -euo pipefail
-              cd "$(tfworkingDirectory)"
+              cd $(tfworkingDirectory)
+              
+              # Initialize Terraform with backend config
               terraform init \
                 -backend-config="resource_group_name=webapp-rg1" \
                 -backend-config="storage_account_name=mytfstatefiles1" \
@@ -152,14 +239,14 @@ stages:
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
-
+          
           - download: current
             artifact: TerraformPlan
 
           - script: |
               set -euo pipefail
-              cd "$(tfworkingDirectory)"
-              terraform apply -auto-approve "$(Pipeline.Workspace)/TerraformPlan/terraform.tfplan"
+              cd $(tfworkingDirectory)
+              terraform apply -auto-approve $(Pipeline.Workspace)/TerraformPlan/terraform.tfplan
             displayName: 'Terraform Apply'
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
@@ -175,17 +262,18 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - checkout: self
-
     - task: AzurePowerShell@5
       inputs:
         azureSubscription: '$(serviceConnection)'
         ScriptType: 'InlineScript'
         Inline: |
+          # Enable Microsoft Defender for Cloud
           Set-AzSecurityPricing -Name "VirtualMachines" -PricingTier "Standard"
-          $assessment = Get-AzSecurityAssessment -ResourceGroupName "webapp-rg1"
+          
+          # Get Security Assessment
+          $assessment = Get-AzSecurityAssessment -ResourceGroupName "$(resourceGroupName)"
           $assessment | ConvertTo-Json | Out-File "security-assessment.json"
-        azurePowerShellVersion: 'LatestVersion'
-
+        azurePowershellVersion: 'LatestVersion'
+    
     - publish: security-assessment.json
       artifact: SecurityAssessment

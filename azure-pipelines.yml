@@ -8,15 +8,15 @@ variables:
     value: '$(System.DefaultWorkingDirectory)/terraform'
   - name: environment
     value: 'prod'
-  # Azure authentication variables
+  # Azure authentication variables for OIDC
   - name: servicePrincipalId
-    value: '$(ARM_CLIENT_ID)'
-  - name: servicePrincipalKey
-    value: '$(ARM_CLIENT_SECRET)'
-  - name: subscriptionId
-    value: '$(ARM_SUBSCRIPTION_ID)'
+    value: '$(ARM_CLIENT_ID)'  # Application (client) ID of the App Registration
   - name: tenantId
-    value: '$(ARM_TENANT_ID)'
+    value: '$(ARM_TENANT_ID)'  # Azure AD tenant ID
+  - name: subscriptionId
+    value: '$(ARM_SUBSCRIPTION_ID)'  # Azure subscription ID
+  - name: ARM_USE_OIDC
+    value: 'true'  # Enable OIDC authentication
 
 stages:
 - stage: SecurityScan
@@ -117,18 +117,21 @@ EOF
         set -euo pipefail
         cd $(tfworkingDirectory)
         
-        # Initialize Terraform with backend config
+        # Initialize Terraform with backend config and OIDC support
         terraform init \
           -backend-config="resource_group_name=webapp-rg1" \
           -backend-config="storage_account_name=mytfstatefiles1" \
           -backend-config="container_name=tfstate" \
-          -backend-config="key=terraform.tfstate"
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="use_oidc=true" \
+          -backend-config="oidc_token=$(AZURE_FEDERATED_TOKEN)"
       displayName: 'Terraform Init'
       env:
+        ARM_USE_OIDC: "true"
         ARM_CLIENT_ID: $(servicePrincipalId)
-        ARM_CLIENT_SECRET: $(servicePrincipalKey)
-        ARM_SUBSCRIPTION_ID: $(subscriptionId)
         ARM_TENANT_ID: $(tenantId)
+        ARM_SUBSCRIPTION_ID: $(subscriptionId)
+        ARM_OIDC_TOKEN: $(AZURE_FEDERATED_TOKEN)
     
     - script: |
         set -euo pipefail
@@ -185,16 +188,25 @@ EOF
               terraform version
             displayName: 'Install Terraform'
           
-          - task: TerraformTaskV4@4
-            inputs:
-              provider: 'azurerm'
-              command: 'init'
-              workingDirectory: '$(tfworkingDirectory)'
-              backendServiceArm: '$(serviceConnection)'
-              backendAzureRmResourceGroupName: 'webapp-rg1'
-              backendAzureRmStorageAccountName: 'mytfstatefiles1'
-              backendAzureRmContainerName: 'tfstate'
-              backendAzureRmKey: 'terraform.tfstate'
+          - script: |
+              set -euo pipefail
+              cd $(tfworkingDirectory)
+              
+              # Initialize Terraform with backend config and OIDC support
+              terraform init \
+                -backend-config="resource_group_name=webapp-rg1" \
+                -backend-config="storage_account_name=mytfstatefiles1" \
+                -backend-config="container_name=tfstate" \
+                -backend-config="key=terraform.tfstate" \
+                -backend-config="use_oidc=true" \
+                -backend-config="oidc_token=$(AZURE_FEDERATED_TOKEN)"
+            displayName: 'Terraform Init'
+            env:
+              ARM_USE_OIDC: "true"
+              ARM_CLIENT_ID: $(servicePrincipalId)
+              ARM_TENANT_ID: $(tenantId)
+              ARM_SUBSCRIPTION_ID: $(subscriptionId)
+              ARM_OIDC_TOKEN: $(AZURE_FEDERATED_TOKEN)
           
           - download: current
             artifact: TerraformPlan

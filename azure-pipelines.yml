@@ -21,8 +21,9 @@ stages:
         terraformVersion: 'latest'
     
     - script: |
-        curl -L "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o -E "https://.+?tfsec-linux-amd64")" > tfsec && chmod +x tfsec
-        ./tfsec $(tfworkingDirectory) --format junit > test-results.xml
+        curl -L "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o -E "https://.+?tfsec-linux-amd64")" -o tfsec
+        chmod +x tfsec
+        ./tfsec . --format junit > test-results.xml
       displayName: 'Run tfsec Security Scanner'
     
     - task: PublishTestResults@2
@@ -133,3 +134,4 @@ stages:
     
     - publish: security-assessment.json
       artifact: SecurityAssessment
+

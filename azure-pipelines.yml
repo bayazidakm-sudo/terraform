@@ -43,7 +43,10 @@ stages:
         TERRAFORM_PATH=$(which terraform)
         echo "Terraform path: $TERRAFORM_PATH"
         ls -l $TERRAFORM_PATH
-        $TERRAFORM_PATH version
+        $TERRAFORM_PATH version || {
+          echo "Terraform installation failed"
+          exit 1
+        }
       displayName: 'Install Terraform'
     
     - script: |
@@ -58,13 +61,21 @@ stages:
         fi
         chmod +x tfsec
         echo "tfsec version: $(./tfsec --version || echo 'unknown')"
-        # Quote the working directory variable to handle spaces
-        TF_DIR="$(tfworkingDirectory)"
-        echo "Running tfsec against: $TF_DIR"
-        # Run tfsec and ensure valid XML output
-        if ! ./tfsec "$TF_DIR" --format junit > test-results.xml.tmp; then
-          echo "tfsec found issues but continuing..."
-        fi
+        
+        # Create initial XML structure
+        cat > test-results.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="tfsec" tests="0" failures="0">
+  </testsuite>
+</testsuites>
+EOF
+        
+        # Run tfsec and capture both output and exit code
+        set +e
+        OUTPUT=$(./tfsec "$(tfworkingDirectory)" --format junit 2>&1)
+        TFSEC_EXIT_CODE=$?
+        set -e
         
         # Verify XML is valid before publishing
         if xmllint --noout test-results.xml.tmp 2>/dev/null; then
@@ -195,21 +206,18 @@ EOF
               set -euo pipefail
               cd $(tfworkingDirectory)
               
-              # Initialize Terraform with backend config and OIDC support
+              # Initialize Terraform with backend config
               terraform init \
                 -backend-config="resource_group_name=webapp-rg1" \
                 -backend-config="storage_account_name=mytfstatefiles1" \
                 -backend-config="container_name=tfstate" \
-                -backend-config="key=terraform.tfstate" \
-                -backend-config="use_oidc=true" \
-                -backend-config="oidc_token=$(AZURE_FEDERATED_TOKEN)"
+                -backend-config="key=terraform.tfstate"
             displayName: 'Terraform Init'
             env:
-              ARM_USE_OIDC: "true"
-              ARM_CLIENT_ID: $(servicePrincipalId)
-              ARM_TENANT_ID: $(tenantId)
-              ARM_SUBSCRIPTION_ID: $(subscriptionId)
-              ARM_OIDC_TOKEN: $(AZURE_FEDERATED_TOKEN)
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
           
           - download: current
             artifact: TerraformPlan

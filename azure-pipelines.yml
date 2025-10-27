@@ -3,11 +3,11 @@ trigger:
 
 variables:
   - name: serviceConnection
-    value: 'webapp-sc'
+    value: 'CandidateProject-2'
   - name: tfstateResourceGroup
-    value: 'terraform-state-rg'
+    value: 'webapp-rg1'
   - name: tfstateStorageAccount
-    value: 'tfstate$(uniqueString(subscription().id))'
+    value: 'mytfstatefiles1'
   - name: tfstateContainer
     value: 'tfstate'
   - name: tfstateKey
@@ -69,6 +69,7 @@ stages:
         terraformVersion: 'latest'
     
     - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
       inputs:
         provider: 'azurerm'
         command: 'init'
@@ -86,6 +87,7 @@ stages:
         workingDirectory: '$(System.DefaultWorkingDirectory)'
     
     - task: TerraformTaskV4@4
+      displayName: 'Terraform Plan'
       inputs:
         provider: 'azurerm'
         command: 'plan'
@@ -126,6 +128,7 @@ stages:
               backendAzureRmKey: '$(tfstateKey)'
           
           - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
             inputs:
               provider: 'azurerm'
               command: 'apply'

@@ -56,37 +56,12 @@ stages:
     # Install and run tfsec (robust with diagnostics and fallback)
     - script: |
         set -euo pipefail
-        TFSEC_URL="https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64"
-        echo "Downloading tfsec from $TFSEC_URL"
-        curl -fSL -o tfsec "$TFSEC_URL"
-        echo "Downloaded file info:"
-        ls -l tfsec || true
-        file tfsec || true
-        # Ensure executable bit
-        if [ ! -x tfsec ]; then
-          echo "Setting executable permission on tfsec"
-          chmod +x tfsec || echo "chmod failed"
-        fi
-        echo "After chmod:"; ls -l tfsec || true
-
-        echo "Attempting to run tfsec --version"
-        if ! ./tfsec --version > /dev/null 2>&1; then
-          echo "Direct tfsec execution failed (exit $?); possible causes: permission denied, wrong architecture, or corrupted binary."
-          echo "Showing file details to help debug:"
-          ls -l tfsec || true
-          file tfsec || true
-          echo "Attempting fallback: run official install script"
-          # Fallback: official installer will fetch correct binary
-          curl -sSL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash || echo "Fallback install failed"
-        else
-          echo "tfsec --version:"; ./tfsec --version || true
-        fi
-
-        echo "Running tfsec scan (non-fatal to pipeline)"
-        # Run scan but don't fail the whole job if tfsec fails; capture exit code
-        ./tfsec "$(System.DefaultWorkingDirectory)" --format junit > test-results.xml || echo "tfsec scan failed with exit code $?"
+        curl -fSL -o tfsec https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64
+        chmod +x tfsec
+        ./tfsec "$(tfworkingDirectory)" --format junit > test-results.xml || echo "tfsec failed"
       displayName: 'Run tfsec Security Scanner'
-      workingDirectory: $(System.DefaultWorkingDirectory)
+
+
     
     # Publish test results
     - task: PublishTestResults@2
@@ -282,3 +257,4 @@ stages:
             -WindowSize 00:05:00 `
             -TimeAggregationOperator Average
         azurePowershellVersion: 'LatestVersion'
+

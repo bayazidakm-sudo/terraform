@@ -100,7 +100,7 @@ EOF
           echo "Valid JUnit XML generated"
         else
           # Generate a valid XML with error message if tfsec output is invalid
-          cat > test-results.xml << EOF
+          cat > test-results.xml << "EOF"
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
   <testsuite name="tfsec" tests="1" failures="1">

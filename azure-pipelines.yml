@@ -8,6 +8,15 @@ variables:
     value: '$(System.DefaultWorkingDirectory)/terraform'
   - name: environment
     value: 'prod'
+  # Azure authentication variables
+  - name: servicePrincipalId
+    value: '$(ARM_CLIENT_ID)'
+  - name: servicePrincipalKey
+    value: '$(ARM_CLIENT_SECRET)'
+  - name: subscriptionId
+    value: '$(ARM_SUBSCRIPTION_ID)'
+  - name: tenantId
+    value: '$(ARM_TENANT_ID)'
 
 stages:
 - stage: SecurityScan
@@ -16,10 +25,21 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    # Using PSGallery installer task which supports current Node.js versions
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-      inputs:
-        terraformVersion: 'latest'
+    # Install Terraform using HashiCorp's official repository
+    - script: |
+        set -euo pipefail
+        echo "Installing HashiCorp GPG key..."
+        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        
+        echo "Adding HashiCorp repository..."
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+        
+        echo "Updating package list and installing Terraform..."
+        sudo apt-get update && sudo apt-get install -y terraform
+        
+        echo "Verifying Terraform installation..."
+        terraform version
+      displayName: 'Install Terraform'
     
     - script: |
         set -euo pipefail
@@ -77,34 +97,60 @@ EOF
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-      inputs:
-        terraformVersion: 'latest'
+    # Install Terraform using HashiCorp's official repository
+    - script: |
+        set -euo pipefail
+        echo "Installing HashiCorp GPG key..."
+        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        
+        echo "Adding HashiCorp repository..."
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+        
+        echo "Updating package list and installing Terraform..."
+        sudo apt-get update && sudo apt-get install -y terraform
+        
+        echo "Verifying Terraform installation..."
+        terraform version
+      displayName: 'Install Terraform'
     
-    - task: TerraformTaskV4@4
-      inputs:
-        provider: 'azurerm'
-        command: 'init'
-        workingDirectory: '$(tfworkingDirectory)'
-        backendServiceArm: '$(serviceConnection)'
-        backendAzureRmResourceGroupName: 'webapp-rg1'
-        backendAzureRmStorageAccountName: 'mytfstatefiles1'
-        backendAzureRmContainerName: 'tfstate'
-        backendAzureRmKey: 'terraform.tfstate'
+    - script: |
+        set -euo pipefail
+        cd $(tfworkingDirectory)
+        
+        # Initialize Terraform with backend config
+        terraform init \
+          -backend-config="resource_group_name=webapp-rg1" \
+          -backend-config="storage_account_name=mytfstatefiles1" \
+          -backend-config="container_name=tfstate" \
+          -backend-config="key=terraform.tfstate"
+      displayName: 'Terraform Init'
+      env:
+        ARM_CLIENT_ID: $(servicePrincipalId)
+        ARM_CLIENT_SECRET: $(servicePrincipalKey)
+        ARM_SUBSCRIPTION_ID: $(subscriptionId)
+        ARM_TENANT_ID: $(tenantId)
     
-    - task: TerraformTaskV4@4
-      inputs:
-        provider: 'azurerm'
-        command: 'validate'
-        workingDirectory: '$(tfworkingDirectory)'
+    - script: |
+        set -euo pipefail
+        cd $(tfworkingDirectory)
+        terraform validate
+      displayName: 'Terraform Validate'
+      env:
+        ARM_CLIENT_ID: $(servicePrincipalId)
+        ARM_CLIENT_SECRET: $(servicePrincipalKey)
+        ARM_SUBSCRIPTION_ID: $(subscriptionId)
+        ARM_TENANT_ID: $(tenantId)
     
-    - task: TerraformTaskV4@4
-      inputs:
-        provider: 'azurerm'
-        command: 'plan'
-        workingDirectory: '$(tfworkingDirectory)'
-        environmentServiceNameAzureRM: '$(serviceConnection)'
-        commandOptions: '-out=$(Build.ArtifactStagingDirectory)/terraform.tfplan'
+    - script: |
+        set -euo pipefail
+        cd $(tfworkingDirectory)
+        terraform plan -out=$(Build.ArtifactStagingDirectory)/terraform.tfplan
+      displayName: 'Terraform Plan'
+      env:
+        ARM_CLIENT_ID: $(servicePrincipalId)
+        ARM_CLIENT_SECRET: $(servicePrincipalKey)
+        ARM_SUBSCRIPTION_ID: $(subscriptionId)
+        ARM_TENANT_ID: $(tenantId)
     
     - publish: $(Build.ArtifactStagingDirectory)/terraform.tfplan
       artifact: TerraformPlan
@@ -123,9 +169,21 @@ EOF
       runOnce:
         deploy:
           steps:
-          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-            inputs:
-              terraformVersion: 'latest'
+          # Install Terraform using HashiCorp's official repository
+          - script: |
+              set -euo pipefail
+              echo "Installing HashiCorp GPG key..."
+              wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+              
+              echo "Adding HashiCorp repository..."
+              echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+              
+              echo "Updating package list and installing Terraform..."
+              sudo apt-get update && sudo apt-get install -y terraform
+              
+              echo "Verifying Terraform installation..."
+              terraform version
+            displayName: 'Install Terraform'
           
           - task: TerraformTaskV4@4
             inputs:
@@ -141,13 +199,16 @@ EOF
           - download: current
             artifact: TerraformPlan
 
-          - task: TerraformTaskV4@4
-            inputs:
-              provider: 'azurerm'
-              command: 'apply'
-              workingDirectory: '$(tfworkingDirectory)'
-              environmentServiceNameAzureRM: '$(serviceConnection)'
-              commandOptions: '$(Pipeline.Workspace)/TerraformPlan/terraform.tfplan'
+          - script: |
+              set -euo pipefail
+              cd $(tfworkingDirectory)
+              terraform apply -auto-approve $(Pipeline.Workspace)/TerraformPlan/terraform.tfplan
+            displayName: 'Terraform Apply'
+            env:
+              ARM_CLIENT_ID: $(servicePrincipalId)
+              ARM_CLIENT_SECRET: $(servicePrincipalKey)
+              ARM_SUBSCRIPTION_ID: $(subscriptionId)
+              ARM_TENANT_ID: $(tenantId)
 
 - stage: SecurityValidation
   dependsOn: Deploy

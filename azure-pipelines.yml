@@ -3,7 +3,7 @@ trigger:
 
 variables:
   - name: serviceConnection
-    value: 'Azure-ServiceConnection'
+    value: 'CandidateProject-2'
   - name: tfworkingDirectory
     value: '$(System.DefaultWorkingDirectory)/terraform'
   - name: environment

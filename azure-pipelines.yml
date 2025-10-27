@@ -8,15 +8,15 @@ variables:
     value: '$(System.DefaultWorkingDirectory)/terraform'
   - name: environment
     value: 'prod'
-  # Azure authentication variables for OIDC
-  - name: servicePrincipalId
-    value: '$(ARM_CLIENT_ID)'  # Application (client) ID of the App Registration
-  - name: tenantId
-    value: '$(ARM_TENANT_ID)'  # Azure AD tenant ID
-  - name: subscriptionId
-    value: '$(ARM_SUBSCRIPTION_ID)'  # Azure subscription ID
-  - name: ARM_USE_OIDC
-    value: 'true'  # Enable OIDC authentication
+  # Azure authentication variables
+  - name: ARM_CLIENT_ID
+    value: '$(servicePrincipalId)'
+  - name: ARM_CLIENT_SECRET
+    value: '$(servicePrincipalKey)'
+  - name: ARM_SUBSCRIPTION_ID
+    value: '$(subscriptionId)'
+  - name: ARM_TENANT_ID
+    value: '$(tenantId)'
 
 stages:
 - stage: SecurityScan
@@ -25,20 +25,25 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    # Install Terraform using HashiCorp's official repository
+    # Install and verify Terraform
     - script: |
         set -euo pipefail
-        echo "Installing HashiCorp GPG key..."
-        wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-        
-        echo "Adding HashiCorp repository..."
-        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-        
-        echo "Updating package list and installing Terraform..."
-        sudo apt-get update && sudo apt-get install -y terraform
-        
-        echo "Verifying Terraform installation..."
-        terraform version
+        # Install Terraform
+        echo "Installing Terraform..."
+        sudo apt-get update
+        sudo apt-get install -y terraform
+
+        # Verify installation and create symlink if needed
+        if ! command -v terraform &> /dev/null; then
+          echo "Terraform not found in PATH. Creating symlink..."
+          sudo ln -s $(find /usr -name terraform) /usr/local/bin/terraform
+        fi
+
+        # Double check installation
+        TERRAFORM_PATH=$(which terraform)
+        echo "Terraform path: $TERRAFORM_PATH"
+        ls -l $TERRAFORM_PATH
+        $TERRAFORM_PATH version
       displayName: 'Install Terraform'
     
     - script: |
@@ -117,21 +122,19 @@ EOF
         set -euo pipefail
         cd $(tfworkingDirectory)
         
-        # Initialize Terraform with backend config and OIDC support
+        # Initialize Terraform with backend config
         terraform init \
           -backend-config="resource_group_name=webapp-rg1" \
           -backend-config="storage_account_name=mytfstatefiles1" \
           -backend-config="container_name=tfstate" \
-          -backend-config="key=terraform.tfstate" \
-          -backend-config="use_oidc=true" \
-          -backend-config="oidc_token=$(AZURE_FEDERATED_TOKEN)"
+          -backend-config="key=terraform.tfstate"
       displayName: 'Terraform Init'
       env:
-        ARM_USE_OIDC: "true"
-        ARM_CLIENT_ID: $(servicePrincipalId)
-        ARM_TENANT_ID: $(tenantId)
-        ARM_SUBSCRIPTION_ID: $(subscriptionId)
-        ARM_OIDC_TOKEN: $(AZURE_FEDERATED_TOKEN)
+        # Using service principal authentication
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
     
     - script: |
         set -euo pipefail
@@ -139,10 +142,10 @@ EOF
         terraform validate
       displayName: 'Terraform Validate'
       env:
-        ARM_CLIENT_ID: $(servicePrincipalId)
-        ARM_CLIENT_SECRET: $(servicePrincipalKey)
-        ARM_SUBSCRIPTION_ID: $(subscriptionId)
-        ARM_TENANT_ID: $(tenantId)
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
     
     - script: |
         set -euo pipefail
@@ -150,10 +153,10 @@ EOF
         terraform plan -out=$(Build.ArtifactStagingDirectory)/terraform.tfplan
       displayName: 'Terraform Plan'
       env:
-        ARM_CLIENT_ID: $(servicePrincipalId)
-        ARM_CLIENT_SECRET: $(servicePrincipalKey)
-        ARM_SUBSCRIPTION_ID: $(subscriptionId)
-        ARM_TENANT_ID: $(tenantId)
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
     
     - publish: $(Build.ArtifactStagingDirectory)/terraform.tfplan
       artifact: TerraformPlan
@@ -217,10 +220,10 @@ EOF
               terraform apply -auto-approve $(Pipeline.Workspace)/TerraformPlan/terraform.tfplan
             displayName: 'Terraform Apply'
             env:
-              ARM_CLIENT_ID: $(servicePrincipalId)
-              ARM_CLIENT_SECRET: $(servicePrincipalKey)
-              ARM_SUBSCRIPTION_ID: $(subscriptionId)
-              ARM_TENANT_ID: $(tenantId)
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
 
 - stage: SecurityValidation
   dependsOn: Deploy

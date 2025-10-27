@@ -16,7 +16,8 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+    # Using PSGallery installer task which supports current Node.js versions
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
       inputs:
         terraformVersion: 'latest'
     
@@ -35,9 +36,32 @@ stages:
         # Quote the working directory variable to handle spaces
         TF_DIR="$(tfworkingDirectory)"
         echo "Running tfsec against: $TF_DIR"
-        ./tfsec "$TF_DIR" --format junit > test-results.xml || true
-        echo "tfsec finished, output:"
-        ls -l tfsec test-results.xml || true
+        # Run tfsec and ensure valid XML output
+        if ! ./tfsec "$TF_DIR" --format junit > test-results.xml.tmp; then
+          echo "tfsec found issues but continuing..."
+        fi
+        
+        # Verify XML is valid before publishing
+        if xmllint --noout test-results.xml.tmp 2>/dev/null; then
+          mv test-results.xml.tmp test-results.xml
+          echo "Valid JUnit XML generated"
+        else
+          # Generate a valid XML with error message if tfsec output is invalid
+          cat > test-results.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="tfsec" tests="1" failures="1">
+    <testcase name="tfsec_scan" classname="SecurityScan">
+      <failure message="Failed to generate valid tfsec output">Check terraform directory manually</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+EOF
+          echo "Generated fallback XML due to invalid tfsec output"
+        fi
+        
+        echo "Final output files:"
+        ls -l tfsec test-results.xml
       displayName: 'Run tfsec Security Scanner'
     
     - task: PublishTestResults@2
@@ -53,7 +77,7 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
       inputs:
         terraformVersion: 'latest'
     
@@ -99,7 +123,7 @@ stages:
       runOnce:
         deploy:
           steps:
-          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
             inputs:
               terraformVersion: 'latest'
           

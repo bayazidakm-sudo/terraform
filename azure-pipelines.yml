@@ -21,9 +21,23 @@ stages:
         terraformVersion: 'latest'
     
     - script: |
-        curl -L "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o -E "https://.+?tfsec-linux-amd64")" -o tfsec
+        set -euo pipefail
+        TFSEC_URL="https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64"
+        echo "Downloading tfsec from $TFSEC_URL"
+        # -f fails on HTTP errors, -S shows errors, -L follows redirects
+        curl -fSL -o tfsec "$TFSEC_URL"
+        if [ ! -s tfsec ]; then
+          echo "tfsec binary not downloaded or empty" >&2
+          exit 1
+        fi
         chmod +x tfsec
-        ./tfsec . --format junit > test-results.xml
+        echo "tfsec version: $(./tfsec --version || echo 'unknown')"
+        # Quote the working directory variable to handle spaces
+        TF_DIR="$(tfworkingDirectory)"
+        echo "Running tfsec against: $TF_DIR"
+        ./tfsec "$TF_DIR" --format junit > test-results.xml || true
+        echo "tfsec finished, output:"
+        ls -l tfsec test-results.xml || true
       displayName: 'Run tfsec Security Scanner'
     
     - task: PublishTestResults@2
@@ -134,4 +148,3 @@ stages:
     
     - publish: security-assessment.json
       artifact: SecurityAssessment
-

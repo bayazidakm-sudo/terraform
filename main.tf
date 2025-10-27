@@ -1,9 +1,21 @@
+# Azure Provider configuration
+provider "azurerm" {
+  features {
+    key_vault {
+      purge_soft_delete_on_destroy = true
+      recover_soft_deleted_key_vaults = true
+    }
+  }
+}
+
 # Resource Group
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
+  
   tags = {
     Environment = var.environment
+    Managed_By  = "Terraform"
   }
 }
 
@@ -13,16 +25,20 @@ resource "azurerm_virtual_network" "vnet" {
   address_space       = ["10.0.0.0/16"]
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+
   tags = {
     Environment = var.environment
   }
 }
 
+# Subnet
 resource "azurerm_subnet" "subnet" {
   name                 = "webapp-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.0.1.0/24"]
+
+  service_endpoints = ["Microsoft.Sql", "Microsoft.KeyVault"]
 }
 
 # Network Security Group
@@ -36,7 +52,7 @@ resource "azurerm_network_security_group" "nsg" {
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
-    protocol                   = "Tcp"
+    protocol                  = "Tcp"
     source_port_range         = "*"
     destination_port_range    = "80"
     source_address_prefix     = "*"
@@ -48,10 +64,10 @@ resource "azurerm_network_security_group" "nsg" {
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
-    protocol                   = "Tcp"
+    protocol                  = "Tcp"
     source_port_range         = "*"
     destination_port_range    = "22"
-    source_address_prefixes   = var.trusted_ips
+    source_address_prefixes   = var.allowed_ssh_ips
     destination_address_prefix = "*"
   }
 
@@ -66,13 +82,14 @@ resource "azurerm_subnet_network_security_group_association" "subnet_nsg" {
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
-# Public IP
+# Public IP for Load Balancer
 resource "azurerm_public_ip" "pip" {
   name                = "webapp-pip"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Static"
   sku                = "Standard"
+
   tags = {
     Environment = var.environment
   }
@@ -95,90 +112,33 @@ resource "azurerm_lb" "lb" {
   }
 }
 
+# Backend Address Pool
 resource "azurerm_lb_backend_address_pool" "backend_pool" {
+  name            = "webapp-backend-pool"
   loadbalancer_id = azurerm_lb.lb.id
-  name            = "BackEndAddressPool"
 }
 
+# Load Balancer Health Probe
 resource "azurerm_lb_probe" "probe" {
-  loadbalancer_id = azurerm_lb.lb.id
-  name            = "http-probe"
-  port            = 80
-  protocol        = "Http"
-  request_path    = "/"
+  name                = "webapp-probe"
+  loadbalancer_id     = azurerm_lb.lb.id
+  protocol            = "Http"
+  port                = 80
+  request_path        = "/"
+  interval_in_seconds = 15
+  number_of_probes    = 2
 }
 
+# Load Balancer Rule
 resource "azurerm_lb_rule" "rule" {
-  loadbalancer_id                = azurerm_lb.lb.id
-  name                           = "http-rule"
-  protocol                       = "Tcp"
-  frontend_port                  = 80
-  backend_port                   = 80
+  name                           = "webapp-rule"
+  loadbalancer_id               = azurerm_lb.lb.id
+  protocol                      = "Tcp"
+  frontend_port                 = 80
+  backend_port                  = 80
   frontend_ip_configuration_name = "PublicIPAddress"
-  backend_address_pool_ids       = [azurerm_lb_backend_address_pool.backend_pool.id]
-  probe_id                       = azurerm_lb_probe.probe.id
-}
-
-# Availability Set
-resource "azurerm_availability_set" "avset" {
-  name                         = "webapp-avset"
-  location                     = azurerm_resource_group.rg.location
-  resource_group_name         = azurerm_resource_group.rg.name
-  platform_fault_domain_count = 2
-  platform_update_domain_count = 5
-  tags = {
-    Environment = var.environment
-  }
-}
-
-# Key Vault
-data "azurerm_client_config" "current" {}
-
-resource "random_string" "kv_name" {
-  length  = 8
-  special = false
-  upper   = false
-}
-
-resource "azurerm_key_vault" "kv" {
-  name                        = "webapp-kv-${random_string.kv_name.result}"
-  location                    = azurerm_resource_group.rg.location
-  resource_group_name         = azurerm_resource_group.rg.name
-  enabled_for_disk_encryption = true
-  tenant_id                   = data.azurerm_client_config.current.tenant_id
-  soft_delete_retention_days  = 7
-  purge_protection_enabled    = false
-  sku_name                   = "standard"
-
-  access_policy {
-    tenant_id = data.azurerm_client_config.current.tenant_id
-    object_id = data.azurerm_client_config.current.object_id
-
-    key_permissions = [
-      "Get", "List", "Create", "Delete",
-    ]
-
-    secret_permissions = [
-      "Get", "List", "Set", "Delete",
-    ]
-  }
-
-  tags = {
-    Environment = var.environment
-  }
-}
-
-# Log Analytics Workspace
-resource "azurerm_log_analytics_workspace" "workspace" {
-  name                = "webapp-logs"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  sku                 = "PerGB2018"
-  retention_in_days   = var.log_retention_days
-
-  tags = {
-    Environment = var.environment
-  }
+  backend_address_pool_ids      = [azurerm_lb_backend_address_pool.backend_pool.id]
+  probe_id                      = azurerm_lb_probe.probe.id
 }
 
 # Application Insights
@@ -187,9 +147,8 @@ resource "azurerm_application_insights" "appinsights" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   application_type    = "web"
-  workspace_id        = azurerm_log_analytics_workspace.workspace.id
-  daily_data_cap_in_gb = var.daily_quota_gb
-  daily_data_cap_notifications_disabled = false
+  retention_in_days   = 90
+  daily_data_cap_in_gb = 1
 
   tags = {
     Environment = var.environment

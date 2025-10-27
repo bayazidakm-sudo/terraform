@@ -1,0 +1,135 @@
+trigger:
+  - main
+
+variables:
+  - name: serviceConnection
+    value: 'Azure-ServiceConnection'
+  - name: tfworkingDirectory
+    value: '$(System.DefaultWorkingDirectory)/terraform'
+  - name: environment
+    value: 'prod'
+
+stages:
+- stage: SecurityScan
+  jobs:
+  - job: TerraformScan
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: TerraformInstaller@0
+      inputs:
+        terraformVersion: 'latest'
+    
+    - script: |
+        curl -L "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o -E "https://.+?tfsec-linux-amd64")" > tfsec && chmod +x tfsec
+        ./tfsec $(tfworkingDirectory) --format junit > test-results.xml
+      displayName: 'Run tfsec Security Scanner'
+    
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+        testRunTitle: 'Terraform Security Scan'
+      condition: succeededOrFailed()
+
+- stage: Validate
+  jobs:
+  - job: ValidateAndPlan
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: TerraformInstaller@0
+      inputs:
+        terraformVersion: 'latest'
+    
+    - task: TerraformTaskV4@4
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(tfworkingDirectory)'
+        backendServiceArm: '$(serviceConnection)'
+        backendAzureRmResourceGroupName: 'webapp-rg1'
+        backendAzureRmStorageAccountName: 'mytfstatefiles1'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'terraform.tfstate'
+    
+    - task: TerraformTaskV4@4
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(tfworkingDirectory)'
+    
+    - task: TerraformTaskV4@4
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(tfworkingDirectory)'
+        environmentServiceNameAzureRM: '$(serviceConnection)'
+        commandOptions: '-out=$(Build.ArtifactStagingDirectory)/terraform.tfplan'
+    
+    - publish: $(Build.ArtifactStagingDirectory)/terraform.tfplan
+      artifact: TerraformPlan
+
+- stage: Deploy
+  dependsOn: 
+  - SecurityScan
+  - Validate
+  condition: succeeded()
+  jobs:
+  - deployment: ApplyTerraform
+    environment: $(environment)
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: 'latest'
+          
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(tfworkingDirectory)'
+              backendServiceArm: '$(serviceConnection)'
+              backendAzureRmResourceGroupName: 'webapp-rg1'
+              backendAzureRmStorageAccountName: 'mytfstatefiles1'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'terraform.tfstate'
+          
+          - download: current
+            artifact: TerraformPlan
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(tfworkingDirectory)'
+              environmentServiceNameAzureRM: '$(serviceConnection)'
+              commandOptions: '$(Pipeline.Workspace)/TerraformPlan/terraform.tfplan'
+
+- stage: SecurityValidation
+  dependsOn: Deploy
+  condition: succeeded()
+  jobs:
+  - job: RunSecurityScans
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzurePowerShell@5
+      inputs:
+        azureSubscription: '$(serviceConnection)'
+        ScriptType: 'InlineScript'
+        Inline: |
+          # Enable Microsoft Defender for Cloud
+          Set-AzSecurityPricing -Name "VirtualMachines" -PricingTier "Standard"
+          
+          # Get Security Assessment
+          $assessment = Get-AzSecurityAssessment -ResourceGroupName "$(resourceGroupName)"
+          $assessment | ConvertTo-Json | Out-File "security-assessment.json"
+        azurePowershellVersion: 'LatestVersion'
+    
+    - publish: security-assessment.json
+      artifact: SecurityAssessment

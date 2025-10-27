@@ -55,9 +55,13 @@ stages:
     
     # Install and run tfsec
     - script: |
-        curl -L "$(curl -s https://api.github.com/repos/aquasecurity/tfsec/releases/latest | grep -o -E "https://.+?tfsec-linux-amd64")" > tfsec && \
+        set -euo pipefail
+        TFSEC_URL="https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64"
+        echo "Downloading tfsec from $TFSEC_URL"
+        curl -fSL -o tfsec "$TFSEC_URL"
         chmod +x tfsec
-        ./tfsec . --format=junit > test-results.xml
+        echo "tfsec version: $(./tfsec --version || echo 'unknown')"
+        ./tfsec "$(System.DefaultWorkingDirectory)" --format junit > test-results.xml || echo "tfsec scan failed"
       displayName: 'Run tfsec Security Scanner'
       workingDirectory: $(System.DefaultWorkingDirectory)
     

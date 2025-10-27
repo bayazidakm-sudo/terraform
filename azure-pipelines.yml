@@ -5,7 +5,7 @@ variables:
   - name: serviceConnection
     value: 'CandidateProject-2'
   - name: tfworkingDirectory
-    value: '$(Build.SourcesDirectory)/terraform'
+    value: '$(Build.SourcesDirectory)'
   - name: environment
     value: 'prod'
   - name: ARM_CLIENT_ID
@@ -198,3 +198,4 @@ stages:
 
     - publish: security-assessment.json
       artifact: SecurityAssessment
+

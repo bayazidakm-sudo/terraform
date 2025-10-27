@@ -80,7 +80,7 @@ stages:
         echo "tfsec version: $(./tfsec --version || echo 'unknown')"
         
         # Create initial XML structure
-        cat > test-results.xml << EOF
+        cat > test-results.xml << "EOF"
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
   <testsuite name="tfsec" tests="0" failures="0">

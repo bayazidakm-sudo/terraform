@@ -1,260 +1,64 @@
 trigger:
   - main
 
+pool:
+  vmImage: 'ubuntu-latest'
+
 variables:
-  - name: serviceConnection
-    value: 'CandidateProject-2'
-  - name: tfstateResourceGroup
-    value: 'webapp-rg1'
-  - name: system.debug
-    value: true
-  - name: tfstateStorageAccount
-    value: 'mytfstatefiles1'
-  - name: tfstateContainer
-    value: 'tfstate'
-  - name: tfstateKey
-    value: 'webapp.tfstate'
-  - name: environment
-    value: 'prod'
-  # Azure authentication variables
-  - name: ARM_CLIENT_ID
-    value: '$(servicePrincipalId)'
-  - name: ARM_CLIENT_SECRET
-    value: '$(servicePrincipalKey)'
-  - name: ARM_SUBSCRIPTION_ID
-    value: '$(subscriptionId)'
-  - name: ARM_TENANT_ID
-    value: '$(tenantId)'
+  - name: terraformVersion
+    value: '1.5.0'
+  - name: resourceGroup
+    value: 'webapp-rg'
 
 stages:
-- stage: SecurityScan
-  displayName: 'Security Scan'
-  jobs:
-  - job: TerraformScan
-    displayName: 'Scan Terraform Code'
-    pool:
-      vmImage: 'ubuntu-latest'
-    timeoutInMinutes: 20
-    steps:
-    - script: |
-        echo "Current working directory: $(pwd)"
-        echo "Listing directory contents:"
-        ls -la
-        echo "Azure CLI version:"
-        az --version
-        echo "Service Principal ID: $(servicePrincipalId)"
-        echo "Subscription: $(subscriptionId)"
-        echo "Resource Group: $(tfstateResourceGroup)"
-      displayName: 'Show Working Directory and Azure Context'
-      env:
-        AZURE_CREDENTIALS: $(serviceConnection)
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-      displayName: 'Install Terraform'
-      inputs:
-        terraformVersion: 'latest'
-    
-    # Install and run tfsec (robust with diagnostics and fallback)
-    - script: |
-        set -euo pipefail
-        curl -fSL -o tfsec https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64
-        chmod +x tfsec
-        ./tfsec "$(tfworkingDirectory)" --format junit > test-results.xml || echo "tfsec failed"
-      displayName: 'Run tfsec Security Scanner'
-
-
-    
-    # Publish test results
-    - task: PublishTestResults@2
-      inputs:
-        testResultsFormat: 'JUnit'
-        testResultsFiles: '**/test-results.xml'
-        testRunTitle: 'Terraform Security Scan'
-      condition: succeededOrFailed()
-
 - stage: Validate
-  displayName: 'Validate Infrastructure'
-  dependsOn: SecurityScan
   jobs:
   - job: ValidateAndPlan
-    displayName: 'Validate and Create Plan'
-    pool:
-      vmImage: 'ubuntu-latest'
-    timeoutInMinutes: 30
     steps:
-    - script: |
-        echo "Starting validation stage"
-        echo "Using Terraform version:"
-        terraform version
-      displayName: 'Show Terraform Version'
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-      displayName: 'Install Terraform'
+    - task: InstallTerraform@0
       inputs:
-        terraformVersion: 'latest'
-    
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Init'
+        terraformVersion: $(terraformVersion)
+
+    - task: AzureCLI@2
       inputs:
-        provider: 'azurerm'
-        command: 'init'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-        backendServiceArm: '$(serviceConnection)'
-        verboseOverride: true
-        backendAzureRmResourceGroupName: '$(tfstateResourceGroup)'
-        backendAzureRmStorageAccountName: '$(tfstateStorageAccount)'
-        backendAzureRmContainerName: '$(tfstateContainer)'
-        backendAzureRmKey: '$(tfstateKey)'
-    
-    - task: TerraformTaskV4@4
+        azureSubscription: 'Azure Service Connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          terraform init
+          terraform validate
+          terraform plan -out=tfplan
+
+    - task: PublishPipelineArtifact@1
       inputs:
-        provider: 'azurerm'
-        command: 'validate'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-    
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Plan'
-      inputs:
-        provider: 'azurerm'
-        command: 'plan'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-        environmentServiceName: '$(serviceConnection)'
-        publishPlanResults: 'TerraformPlan'
-        verboseOverride: true
-      continueOnError: true
+        targetPath: '$(System.DefaultWorkingDirectory)/tfplan'
+        artifact: 'tfplan'
+        publishLocation: 'pipeline'
 
 - stage: Deploy
-  displayName: 'Deploy Infrastructure'
   dependsOn: Validate
   condition: succeeded()
   jobs:
   - deployment: DeployInfrastructure
-    displayName: 'Deploy to Azure'
-    environment: $(environment)
-    pool:
-      vmImage: 'ubuntu-latest'
-    timeoutInMinutes: 60
+    environment: 'Production'
     strategy:
       runOnce:
         deploy:
           steps:
-          - script: |
-              echo "Starting deployment stage"
-              echo "Environment: $(environment)"
-              echo "Working directory: $(pwd)"
-            displayName: 'Show Deployment Context'
-          - checkout: self
-          
-          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-            displayName: 'Install Terraform'
+          - task: InstallTerraform@0
             inputs:
-              terraformVersion: 'latest'
-          
-          - task: TerraformTaskV4@4
+              terraformVersion: $(terraformVersion)
+
+          - task: DownloadPipelineArtifact@2
             inputs:
-              provider: 'azurerm'
-              command: 'init'
-              workingDirectory: '$(System.DefaultWorkingDirectory)'
-              backendServiceArm: '$(serviceConnection)'
-              backendAzureRmResourceGroupName: '$(tfstateResourceGroup)'
-              backendAzureRmStorageAccountName: '$(tfstateStorageAccount)'
-              backendAzureRmContainerName: '$(tfstateContainer)'
-              backendAzureRmKey: '$(tfstateKey)'
-          
-          - task: TerraformTaskV4@4
-            displayName: 'Terraform Apply'
+              artifactName: 'tfplan'
+              targetPath: '$(System.DefaultWorkingDirectory)'
+
+          - task: AzureCLI@2
             inputs:
-              provider: 'azurerm'
-              command: 'apply'
-              workingDirectory: '$(System.DefaultWorkingDirectory)'
-              environmentServiceName: '$(serviceConnection)'
-              commandOptions: '-auto-approve'
-
-- stage: SecurityValidation
-  displayName: 'Security Validation'
-  dependsOn: Deploy
-  condition: succeeded()
-  jobs:
-  - job: SecurityScans
-    displayName: 'Run Security Scans'
-    pool:
-      vmImage: 'ubuntu-latest'
-    timeoutInMinutes: 45
-    steps:
-    - script: |
-        echo "Starting security validation stage"
-        echo "Resource Group: webapp-rg"
-      displayName: 'Show Security Scan Context'
-    - task: AzurePowerShell@5
-      inputs:
-        azureSubscription: '$(serviceConnection)'
-        ScriptType: 'InlineScript'
-        Inline: |
-          # Enable Microsoft Defender for Cloud
-          Set-AzSecurityPricing -Name "VirtualMachines" -PricingTier "Standard"
-          
-          # Get Security Assessment
-          $assessment = Get-AzSecurityAssessment -ResourceGroupName "webapp-rg"
-          $assessment | ConvertTo-Json | Out-File "security-assessment.json"
-          
-          # Get Vulnerability Assessment
-          $vulnAssessment = Get-AzSecurityTask -ResourceGroupName "webapp-rg"
-          $vulnAssessment | ConvertTo-Json | Out-File "vulnerability-assessment.json"
-        azurePowershellVersion: 'LatestVersion'
-    
-    - publish: $(System.DefaultWorkingDirectory)/security-assessment.json
-      artifact: SecurityAssessment
-    
-    - publish: $(System.DefaultWorkingDirectory)/vulnerability-assessment.json
-      artifact: VulnerabilityAssessment
-    
-    # Run OWASP ZAP scan against the web application
-    - script: |
-        docker pull owasp/zap2docker-stable
-        docker run -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-stable zap-baseline.py \
-          -t http://$(webapp-pip) -J zap-report.json
-      displayName: 'Run OWASP ZAP Scan'
-    
-    - publish: $(System.DefaultWorkingDirectory)/zap-report.json
-      artifact: OWASPZapReport
-
-- stage: Monitoring
-  displayName: 'Setup Monitoring'
-  dependsOn: SecurityValidation
-  condition: succeeded()
-  jobs:
-  - job: ConfigureMonitoring
-    displayName: 'Configure Azure Monitor and App Insights'
-    pool:
-      vmImage: 'ubuntu-latest'
-    timeoutInMinutes: 30
-    steps:
-    - script: |
-        echo "Starting monitoring configuration"
-        echo "Subscription ID: $(subscription-id)"
-      displayName: 'Show Monitoring Context'
-    - task: AzurePowerShell@5
-      inputs:
-        azureSubscription: '$(serviceConnection)'
-        ScriptType: 'InlineScript'
-        Inline: |
-          # Configure diagnostic settings
-          $workspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName "webapp-rg" -Name "webapp-law"
-          
-          # Configure VM diagnostics
-          Get-AzVM -ResourceGroupName "webapp-rg" | ForEach-Object {
-            Set-AzVMDiagnosticsExtension -ResourceGroupName "webapp-rg" `
-              -VMName $_.Name `
-              -WorkspaceId $workspace.CustomerId `
-              -WorkspaceKey (Get-AzOperationalInsightsWorkspaceSharedKey -ResourceGroupName "webapp-rg" -Name "webapp-law").PrimarySharedKey
-          }
-          
-          # Configure Azure Monitor alerts
-          New-AzMetricAlertRule -Name "CPU-Alert" `
-            -ResourceGroupName "webapp-rg" `
-            -TargetResourceId "/subscriptions/$(subscription-id)/resourceGroups/webapp-rg/providers/Microsoft.Compute/virtualMachines/*" `
-            -MetricName "Percentage CPU" `
-            -Operator GreaterThan `
-            -Threshold 80 `
-            -WindowSize 00:05:00 `
-            -TimeAggregationOperator Average
-        azurePowershellVersion: 'LatestVersion'
-
+              azureSubscription: 'Azure Service Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                terraform init
+                terraform apply -auto-approve tfplan
